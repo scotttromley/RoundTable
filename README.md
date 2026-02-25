@@ -21,7 +21,7 @@
 2. Double-click the file to open it in any modern web browser.
 3. Enter an **Instruction for this round** (or leave the pre-populated default).
 4. Click **+ Friend** to add personas, give them aliases (e.g., "GPT-4", "Claude", "Expert A"), and paste their respective responses into the text areas.
-5. Click **Build prompt ⌘↵** to compile the data into a single, cohesive prompt ready to be fed back into your LLM of choice.
+5. Click **Build prompt ⌘↵** to compile the data into a single, cohesive prompt ready to be fed back into all of your LLMs for another round. Keep doing this, and eventually they will all converge on an ideal solution. 
 
 ## 🛠️ Built With
 
