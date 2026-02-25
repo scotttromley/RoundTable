@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Prompt Orchestrator – Ultimate Edition</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body class="bg-slate-100 min-h-screen p-6">
+  <div id="sessionBar" class="flex flex-wrap gap-3 items-center mb-6">
+    <label class="font-medium">Session name:</label>
+    <input id="sessionName" type="text" class="px-2 py-1 border rounded w-44" placeholder="e.g. auth‑refactor">
+    <button id="saveSessionBtn" class="px-3 py-1 bg-emerald-600 text-white rounded shadow">Save</button>
+    <select id="loadSessionSel" class="px-2 py-1 border rounded hidden"></select>
+
+    <div class="ml-auto flex gap-3 items-center">
+      <button id="addFriendBtn" class="px-3 py-1 bg-green-600 text-white rounded shadow">+ Friend</button>
+      <span class="text-sm">Round <span id="roundNo" class="font-semibold">0</span></span>
+    </div>
+  </div>
+
+  <div class="mb-6">
+    <label class="block font-medium mb-1">Instruction for this round</label>
+    <textarea id="instructionBox" rows="3" class="w-full p-3 border rounded font-mono"></textarea>
+  </div>
+
+  <div id="cards" class="grid md:grid-cols-2 gap-4 mb-6">
+    </div>
+
+  <div class="flex gap-4 mb-8">
+    <button id="buildBtn" class="px-4 py-2 bg-blue-600 text-white rounded shadow disabled:opacity-40">Build prompt ⌘↵</button>
+    <button id="resetBtn" class="px-4 py-2 bg-gray-300 rounded shadow">Reset session</button>
+  </div>
+
+  <div id="outputPanel" class="hidden">
+    <div class="flex gap-4 mb-2 items-center">
+      <h2 class="text-lg font-semibold">Compiled prompt</h2>
+      <button id="copyBtn" class="px-2 py-1 bg-indigo-600 text-white text-sm rounded">Copy</button>
+      <button id="previewToggleBtn" class="px-2 py-1 bg-slate-300 text-sm rounded">Preview ↔ Raw</button>
+    </div>
+    <textarea id="outputBox" rows="14" class="w-full p-3 border rounded font-mono"></textarea>
+    <div id="previewBox" class="prose max-w-none hidden bg-white p-6 border rounded"></div>
+  </div>
+
+  <div id="historyPanel" class="mt-10">
+    </div>
+
+  <script>
+// ╭──────────────────────── State & Persistence ────────────────────╮
+const STORAGE_KEY = 'po_v2'; // Key for localStorage
+let state = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); // Load state or initialize empty
+
+// Define current code's default instructions
+const currentInstructionDefaults = [
+  'Evaluate the following potential solutions, and synthesize the best possible solution out of them.',
+  'Evaluate the following synthesized solutions, and rank them. Point out any faults that might disqualify any of them. Then, for the ones that have been disqualified, fix them, and then evaluate them in light of the fixes. Based on this evaluate create the ultimate solution.'
+];
+
+// Initialize state if it's empty or doesn't have the 'friends' array
+if (!state.friends) { // A good check for a truly new/uninitialized state
+  state = {
+    round: 0,
+    friends: [], 
+    history: [], 
+    instructionDefaults: [...currentInstructionDefaults], // Use current defaults
+    sessionName: '' 
+  };
+} else {
+  // If state was loaded, ensure its instructionDefaults are updated to the current code version
+  state.instructionDefaults = [...currentInstructionDefaults];
+}
+
+// Function to save the current state to localStorage
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+// ╭──────────────────────── Utility helpers ────────────────────────╮
+function byId(id) { return document.getElementById(id); }
+function copyToClipboard(text) { navigator.clipboard.writeText(text); }
+
+function escapeAttr(unsafe) {
+    if (typeof unsafe !== 'string') return '';
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;")
+         .replace(/"/g, "&quot;")
+         .replace(/'/g, "&#039;");
+}
+
+function escapeTextContent(unsafe) {
+    if (typeof unsafe !== 'string') return '';
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;");
+}
+
+// ╭──────────────────────── Friend card rendering ───────────────────╮
+function addFriend(alias = `Friend ${state.friends.length + 1}`, text = '') {
+  state.friends.push({ alias, text });
+  renderCards(); 
+  setInstructionForRound(); 
+  save(); 
+}
+
+function removeFriend(index) {
+  state.friends.splice(index, 1); 
+  renderCards(); 
+  setInstructionForRound(); 
+  save(); 
+}
+
+function renderCards() {
+  const cardsDiv = byId('cards');
+  cardsDiv.innerHTML = ''; 
+
+  state.friends.forEach((friendData, i) => {
+    const card = document.createElement('div');
+    card.className = 'bg-white p-4 rounded shadow'; 
+    card.innerHTML = `
+      <div class="flex gap-2 mb-2 items-center">
+        <input class="alias grow border px-2 py-1 rounded" value="${escapeAttr(friendData.alias)}" data-i="${i}" placeholder="Friend Alias">
+        <button class="rm text-red-500 hover:text-red-700" title="Remove friend" data-i="${i}">✕</button>
+      </div>
+      <textarea rows="6" class="text w-full border p-2 rounded font-mono" data-i="${i}" placeholder="Paste friend's message here...">${escapeTextContent(friendData.text)}</textarea>`;
+    cardsDiv.appendChild(card);
+  });
+
+  cardsDiv.querySelectorAll('.alias').forEach(inputElement => {
+    inputElement.oninput = event => {
+      state.friends[event.target.dataset.i].alias = event.target.value;
+      save();
+    };
+  });
+
+  cardsDiv.querySelectorAll('.text').forEach(textareaElement => {
+    textareaElement.oninput = event => {
+      state.friends[event.target.dataset.i].text = event.target.value;
+      save();
+    };
+  });
+
+  cardsDiv.querySelectorAll('.rm').forEach(buttonElement => {
+    buttonElement.onclick = event => {
+      removeFriend(Number(event.target.dataset.i));
+    };
+  });
+
+  byId('buildBtn').disabled = state.friends.length === 0;
+}
+
+// ╭──────────────────────── Instruction box init ────────────────────╮
+function setInstructionForRound() {
+  // Ensure state.instructionDefaults is defined and has entries
+  const defaultText = (state.instructionDefaults && state.instructionDefaults[state.round]) 
+                      ? state.instructionDefaults[state.round] 
+                      : `Instruction for Round ${state.round + 1}`;
+  byId('instructionBox').value = defaultText;
+}
+
+// ╭──────────────────────── Prompt builder ──────────────────────────╮
+function buildPrompt(instr, cards) {
+  return instr.trim() + '\n\n' +
+         cards.map(cardData => `### ${cardData.alias}\n\n${cardData.text.trim()}\n`).join('\n');
+}
+
+function doBuildPrompt() {
+  const instr = byId('instructionBox').value.trim();
+  if (!instr) {
+    alert('Please enter an instruction for this round.');
+    return;
+  }
+  if (state.friends.length === 0) {
+    alert('Please add at least one friend.');
+    return;
+  }
+  if (state.friends.some(friend => !friend.text.trim())) {
+    alert('Every friend needs content (message/code) for this round.');
+    return;
+  }
+
+  const promptTxt = buildPrompt(instr, state.friends);
+  state.history.push({ round: state.round, prompt: promptTxt, timestamp: Date.now() });
+  state.round += 1; 
+  save(); 
+
+  byId('roundNo').textContent = state.round; 
+
+  byId('outputPanel').classList.remove('hidden');
+  byId('outputBox').classList.remove('hidden'); 
+  byId('previewBox').classList.add('hidden'); 
+  byId('outputBox').value = promptTxt;
+
+  state.friends.forEach(friend => friend.text = '');
+  renderCards(); 
+  setInstructionForRound(); 
+  renderHistory(); 
+}
+
+// ╭──────────────────────── History render ──────────────────────────╮
+function renderHistory() {
+  const historyDiv = byId('historyPanel');
+  historyDiv.innerHTML = '<h2 class="text-lg font-semibold mb-2">History</h2>'; 
+  if (!state.history || state.history.length === 0) { // Added check for undefined history
+    historyDiv.innerHTML += '<p class="text-sm text-slate-500">No prompts generated yet.</p>';
+    return;
+  }
+
+  state.history.slice().reverse().forEach((historyItem, idx) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mb-4';
+    wrapper.innerHTML = `
+      <details class="border rounded bg-white shadow-sm" ${idx === 0 ? 'open' : ''}>
+        <summary class="cursor-pointer select-none px-4 py-2 font-medium bg-slate-200 hover:bg-slate-300 rounded-t">Round ${historyItem.round} – ${new Date(historyItem.timestamp).toLocaleString()}</summary>
+        <pre class="p-4 overflow-x-auto whitespace-pre-wrap text-sm bg-white rounded-b">${escapeTextContent(historyItem.prompt)}</pre>
+      </details>`;
+    historyDiv.appendChild(wrapper);
+  });
+}
+
+// ╭──────────────────────── Session save/load ───────────────────────╮
+function refreshSessionSelect() {
+  const selectEl = byId('loadSessionSel');
+  const sessions = JSON.parse(localStorage.getItem('po_sessions') || '[]'); 
+  selectEl.innerHTML = '<option disabled selected value="">Load session…</option>' +
+                     sessions.map(sessionName => `<option value="${sessionName}">${escapeAttr(sessionName)}</option>`).join('');
+  selectEl.classList.toggle('hidden', sessions.length === 0); 
+}
+
+function saveSession() {
+  const currentSessionNameInput = byId('sessionName');
+  if (!state.sessionName) { 
+      state.sessionName = currentSessionNameInput.value.trim();
+  }
+  const name = state.sessionName || prompt('Enter a name for this session:');
+  if (!name) return; 
+
+  state.sessionName = name;
+  currentSessionNameInput.value = name; 
+  save(); 
+
+  let sessions = JSON.parse(localStorage.getItem('po_sessions') || '[]');
+  if (!sessions.includes(name)) {
+    sessions.push(name);
+    localStorage.setItem('po_sessions', JSON.stringify(sessions));
+  }
+  localStorage.setItem(`po_${name}`, JSON.stringify(state));
+  refreshSessionSelect(); 
+  alert(`Session "${name}" saved.`);
+}
+
+function loadSession(name) {
+  if (!name) return;
+  const sessionDataString = localStorage.getItem(`po_${name}`);
+  if (!sessionDataString) {
+    alert(`Session "${name}" not found.`);
+    return;
+  }
+  state = JSON.parse(sessionDataString);
+  // Ensure instructionDefaults are current after loading an old session
+  state.instructionDefaults = [...currentInstructionDefaults]; 
+  save(); 
+
+  byId('sessionName').value = state.sessionName || '';
+  byId('roundNo').textContent = state.round;
+  renderCards();
+  setInstructionForRound();
+  renderHistory();
+  byId('outputPanel').classList.add('hidden'); 
+  alert(`Session "${name}" loaded.`);
+}
+
+// ╭──────────────────────── Preview toggle ──────────────────────────╮
+function togglePreview() {
+  const rawOutputBox = byId('outputBox');
+  const previewRenderBox = byId('previewBox');
+  if (rawOutputBox.classList.contains('hidden')) {
+    previewRenderBox.classList.add('hidden');
+    rawOutputBox.classList.remove('hidden');
+  } else {
+    previewRenderBox.innerHTML = marked.parse(rawOutputBox.value); 
+    previewRenderBox.classList.remove('hidden');
+    rawOutputBox.classList.add('hidden');
+  }
+}
+
+// ╭──────────────────────── Reset session ───────────────────────────╮
+function resetSession() {
+  if (!confirm('Start a brand-new session? This will clear current friend inputs and reset the round counter. History and saved sessions are kept.')) return;
+  
+  // Preserve sessionName and history if they exist
+  const sessionNameToKeep = state.sessionName || '';
+  const historyToKeep = state.history ? [...state.history] : [];
+
+  // Reset to a clean slate but with current code defaults
+  state = {
+    round: 0,
+    friends: [],
+    history: historyToKeep, // Keep existing history
+    instructionDefaults: [...currentInstructionDefaults], // Use current code defaults
+    sessionName: sessionNameToKeep // Keep existing session name
+  };
+  
+  save(); 
+
+  addFriend(); 
+  setInstructionForRound(); 
+  byId('roundNo').textContent = 0; 
+  byId('outputPanel').classList.add('hidden'); 
+  renderHistory(); // Re-render history (which was preserved)
+  byId('sessionName').value = state.sessionName; // Ensure session name field is updated
+}
+
+// ╭──────────────────────── Event wiring ────────────────────────────╮
+byId('addFriendBtn').onclick = () => addFriend();
+byId('buildBtn').onclick     = doBuildPrompt;
+byId('copyBtn').onclick      = () => {
+    copyToClipboard(byId('outputBox').value);
+    alert('Prompt copied to clipboard!');
+};
+byId('previewToggleBtn').onclick = togglePreview;
+byId('resetBtn').onclick     = resetSession;
+byId('saveSessionBtn').onclick = saveSession;
+byId('loadSessionSel').onchange = event => loadSession(event.target.value);
+byId('sessionName').oninput    = event => {
+    state.sessionName = event.target.value.trim();
+    // Save on input for sessionName for immediate persistence if user navigates away
+    save(); 
+};
+// Removed onblur for sessionName as oninput + save() covers it.
+
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+    event.preventDefault(); 
+    if (!byId('buildBtn').disabled) {
+      doBuildPrompt();
+    }
+  }
+});
+
+// ╭──────────────────────── Initial render  ─────────────────────────╮
+// This block already ensures instructionDefaults are updated due to the logic at the top.
+if (!state.friends.length && state.round === 0) { 
+  addFriend(); 
+}
+renderCards(); 
+setInstructionForRound(); 
+renderHistory(); 
+refreshSessionSelect(); 
+byId('sessionName').value = state.sessionName || ''; 
+byId('roundNo').textContent = state.round; 
+if (state.friends.length === 0) { 
+    byId('buildBtn').disabled = true;
+}
+
+  </script>
+</body>
+</html>
